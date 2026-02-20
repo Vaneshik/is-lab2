@@ -356,4 +356,11 @@ public class PersonRepository {
             throw new RuntimeException("Batch save failed: " + e.getMessage(), e);
         }
     }
+
+    public void saveAllInTransaction(List<Person> persons, Session session) {
+        for (Person person : persons) {
+            session.persist(person);
+        }
+        session.flush();
+    }
 }

@@ -12,6 +12,9 @@ import ru.ifmo.person.websocket.PersonWebSocket;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.validation.Validator;
+import org.hibernate.Session;
+import org.hibernate.SessionFactory;
+import org.hibernate.Transaction;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -35,11 +38,17 @@ public class ImportService {
     @Inject
     private Validator validator;
 
+    @Inject
+    private SessionFactory sessionFactory;
+
     public ImportHistoryDto importPersons(List<PersonDto> personDtos, String username) {
+        Transaction tx = null;
         ImportHistory history = new ImportHistory();
         history.setUsername(username);
         
-        try {
+        try (Session session = sessionFactory.openSession()) {
+            tx = session.beginTransaction();
+            
             List<Person> personsToSave = new ArrayList<>();
             
             for (int i = 0; i < personDtos.size(); i++) {
@@ -69,8 +78,8 @@ public class ImportService {
                     if (personDto.getName() != null && personDto.getCoordinates() != null &&
                         existingDto.getName() != null && existingDto.getCoordinates() != null &&
                         personDto.getName().equals(existingDto.getName()) &&
-                        personDto.getCoordinates().getX() == existingDto.getCoordinates().getX() &&
-                        personDto.getCoordinates().getY() == existingDto.getCoordinates().getY()) {
+                        personDto.getCoordinates().getX().equals(existingDto.getCoordinates().getX()) &&
+                        personDto.getCoordinates().getY().equals(existingDto.getCoordinates().getY())) {
                         throw new IllegalArgumentException(
                             "Duplicate name+coordinates ('" + personDto.getName() + "' at " +
                             personDto.getCoordinates().getX() + "," + personDto.getCoordinates().getY() +
@@ -82,24 +91,37 @@ public class ImportService {
                 personsToSave.add(person);
             }
             
-            personRepository.saveAll(personsToSave);
+            personRepository.saveAllInTransaction(personsToSave, session);
             
             history.setStatus(ImportStatus.SUCCESS);
             history.setImportedCount(personsToSave.size());
             history.setErrorMessage(null);
+            session.persist(history);
+            session.flush();
+            session.refresh(history);
+            
+            tx.commit();
             
             for (Person person : personsToSave) {
                 PersonWebSocket.notifyClients("created", person.getId());
             }
             
+            return toDto(history);
+            
         } catch (Exception e) {
+            if (tx != null) {
+                try {
+                    tx.rollback();
+                } catch (Exception rollbackEx) {
+                }
+            }
+            
             history.setStatus(ImportStatus.FAILED);
             history.setImportedCount(0);
             history.setErrorMessage(e.getMessage());
+            ImportHistory savedHistory = importHistoryRepository.save(history);
+            return toDto(savedHistory);
         }
-        
-        ImportHistory savedHistory = importHistoryRepository.save(history);
-        return toDto(savedHistory);
     }
 
     public List<ImportHistoryDto> getAllHistory() {
